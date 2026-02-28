@@ -3,6 +3,7 @@ import { getImgReferrerPolicy, getTopListDetail } from '../services/api';
 import { Song, TopList } from '../types';
 import { usePlayer } from '../contexts/PlayerContext';
 import { PlayIcon, MusicIcon, ErrorIcon } from '../components/Icons';
+import { isAvailable as pipedIsAvailable } from '../services/piped';
 
 // ====== Кэш данных — предотвращает повторные запросы при смене источника ======
 const _topListCache = new Map<string, { lists: TopList[]; ts: number }>();
@@ -147,7 +148,7 @@ const Home: React.FC = () => {
       </div>
 
       {/* Переключатель источников */}
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-2 mb-4 flex-wrap items-center">
         <button
           onClick={() => setTrendSource('youtube')}
           className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
@@ -159,15 +160,22 @@ const Home: React.FC = () => {
           YouTube Тренды
         </button>
         <button
-          onClick={() => setTrendSource('piped')}
+          onClick={() => {
+            if (!pipedIsAvailable()) return;
+            setTrendSource('piped');
+          }}
+          disabled={!pipedIsAvailable()}
           className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
             trendSource === 'piped'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 active:opacity-70'
-          }`}
+          } ${!pipedIsAvailable() ? 'opacity-30 cursor-not-allowed' : ''}`}
         >
           Piped Тренды
         </button>
+        {!pipedIsAvailable() && (
+          <span className="text-xs text-red-500 ml-2">Piped недоступен</span>
+        )}
       </div>
 
       {error && (

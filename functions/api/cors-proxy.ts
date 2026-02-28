@@ -39,9 +39,15 @@ const ALLOWED_HOSTS = [
     'api.piped.privacydev.net',
     'pipedapi.adminforge.de',
     'pipedapi.moomoo.me',
+    'api.piped.moomoo.me',
+    'piped-api.hypercrab.xyz',
     // потенциальные инстансы/хосты Piped, могут понадобиться позже
     'piped.video',
     'piped.kavin.rocks',
+    'pipedapi.kavin.rocks',
+    'piped-api.kavin.rocks',
+    // allow fetching instance lists/docs from GitHub/raw content when updating instance list
+    'raw.githubusercontent.com',
     'adminforge.destreams',
 ];
 

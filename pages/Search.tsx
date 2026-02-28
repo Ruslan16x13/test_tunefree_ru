@@ -1,6 +1,7 @@
 import React, { useState, useEffect, memo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { getImgReferrerPolicy, searchSongs, searchAggregate } from '../services/api';
+import { isAvailable as pipedIsAvailable } from '../services/piped';
 import { Song } from '../types';
 import { usePlayer } from '../contexts/PlayerContext';
 import { SearchIcon, MusicIcon, TrashIcon } from '../components/Icons';
@@ -77,6 +78,8 @@ const Search: React.FC = () => {
   const [isSearching, setIsSearching] = useState(false);
   const [searchMode, setSearchMode] = useState<'aggregate' | 'single'>('aggregate');
   const [searchSource, setSearchSource] = useState<'youtube' | 'piped'>('youtube');
+
+    const pipedAvailable = pipedIsAvailable();
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
 
@@ -196,7 +199,7 @@ const Search: React.FC = () => {
         </div>
 
         {/* Переключатель источников */}
-        <div className="flex gap-2 mb-3">
+        <div className="flex gap-2 mb-3 flex-wrap items-center">
           <button
             onClick={() => {
               setSearchMode('aggregate');
@@ -228,20 +231,25 @@ const Search: React.FC = () => {
           </button>
           <button
             onClick={() => {
+              if (!pipedAvailable) return;
               setSearchMode('single');
               setSearchSource('piped');
               setPage(1);
               setResults([]);
             }}
+            disabled={!pipedAvailable}
             className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
               searchMode === 'single' && searchSource === 'piped'
                 ? 'bg-blue-500 text-white'
                 : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 active:opacity-70'
-            }`}
+            } ${!pipedAvailable ? 'opacity-30 cursor-not-allowed' : ''}`}
           >
             Piped
           </button>
-        </div>
+                    {!pipedAvailable && (
+                        <span className="text-xs text-red-500 ml-2">Piped недоступен</span>
+                    )}
+                </div>
 
       </div>
 

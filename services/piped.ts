@@ -10,18 +10,59 @@ import { Song } from '../types';
 // вероятность получения рабочего результата, поэтому самую стабильную
 // (если она есть) желательно поместить в начало. Пустые/сломанные домены
 // будут автоматически пропускаться.
-const PIPED_INSTANCES = [
-  // раньше использовался `pipedapi.adminforge.de`, но он переадресовывает на
-  // несуществующий домен и вызывает HTTP 530 при проксировании через CF.
-  // Удаляем его из списка, оставляя меньше шансов получить 530.
+let PIPED_INSTANCES = [
+  // с 2026‑03 многие публичные инстансы либо блокируют Cloudflare, либо
+  // возвращают 502. Списки можно дополнять по необходимости, но в любом случае
+  // полагаться на этот массив нельзя – он будет считаться временной
+  // «кеш‑трубой».
   'https://pipedapi.moomoo.me',
   'https://api.piped.moomoo.me',
   'https://piped-api.hypercrab.xyz',
 ];
 
+// Если задан URL со списком публичных инстансов (через Vite env), попытаемся
+// загрузить его и расширить/заменить локальный массив. Формат — JSON массив
+// объектов с полем `api_url` или простой массив URL-строк.
+const INSTANCE_LIST_URL = (import.meta as any).env?.VITE_PIPED_INSTANCES as string | undefined;
+
+const updateInstances = async () => {
+  if (!INSTANCE_LIST_URL) return;
+  try {
+    const proxyUrl = `/api/cors-proxy?url=${encodeURIComponent(INSTANCE_LIST_URL)}`;
+    const resp = await fetch(proxyUrl, { headers: { Accept: 'application/json' } });
+    if (!resp.ok) return;
+    const json = await resp.json();
+    let instances: string[] = [];
+    if (Array.isArray(json)) {
+      if (json.length > 0 && typeof json[0] === 'string') instances = json;
+      else if (typeof json[0] === 'object' && json[0].api_url) instances = json.map((x: any) => x.api_url).filter(Boolean);
+    }
+    if (instances.length > 0) {
+      // Поместим новые инстансы в начало — они, вероятно, актуальнее.
+      PIPED_INSTANCES = [...instances, ...PIPED_INSTANCES.filter(i => !instances.includes(i))];
+      console.info('[Piped] loaded remote instances:', PIPED_INSTANCES);
+    }
+  } catch (e) {
+    console.warn('[Piped] failed to load remote instances:', e);
+  }
+};
+
+// Попытка загрузки списка инстансов при инициализации модуля
+void updateInstances();
+
+// Текущее индекс инстанции — используется как отправная точка для
+// перебора доступных адресов.
+let currentInstanceIndex = 0;
+
+// Отмечаем экземпляры, которые недавно начали выдавать ошибки. Хосты в
+// этой таблице игнорируются в течение указанного таймаута, после чего мы
+// попытаемся снова.
+const BROKEN_INSTANCES: Record<string, number> = {};
+const BROKEN_TIMEOUT = 1000 * 60 * 5; // 5 минут
+
 // Текущий индекс инстанции — будет двигаться по массиву по кругу, чтобы
 // при следующем запросе начинать со следующей точки.
-let currentInstanceIndex = 0;
+// (объявлен один раз выше)
 
 const getPipedInstance = (): string => {
   return PIPED_INSTANCES[currentInstanceIndex];
@@ -47,12 +88,35 @@ const pipedFetch = async (endpoint: string): Promise<Response | null> => {
 
   // Сохраним стартовую позицию, чтобы потом продвинуть currentInstanceIndex,
   // начиная со следующей точки (round‑robin).
-  const startIndex = currentInstanceIndex;
-  const len = PIPED_INSTANCES.length;
+  const now = Date.now();
+  // выбираем только экземпляры, не помеченные как "сломанные" в последние
+  // BROKEN_TIMEOUT милисекунд.
+  const available = PIPED_INSTANCES.filter(inst => {
+    const t = BROKEN_INSTANCES[inst];
+    return t === undefined || now - t > BROKEN_TIMEOUT;
+  });
+
+  // Вычислим стартовую позицию в списке доступных инстансов. Если текущая
+  // инстанция отсутствует в списке доступных (например, была помечена
+  // сломанной), начнём с нуля.
+  const startIndex = (() => {
+    const nowStart = currentInstanceIndex % PIPED_INSTANCES.length;
+    const orig = PIPED_INSTANCES[nowStart];
+    const idxInAvailable = available.indexOf(orig);
+    return idxInAvailable >= 0 ? idxInAvailable : 0;
+  })();
+
+  if (available.length === 0) {
+    // ничего не осталось — сразу возвращаем null
+    console.warn('[Piped] no available instances (all marked broken)');
+    return null;
+  }
+
+  const len = available.length;
 
   for (let i = 0; i < len; i++) {
     const idx = (startIndex + i) % len;
-    const instance = PIPED_INSTANCES[idx];
+    const instance = available[idx];
     const url = `${instance}${endpoint}`;
     console.log(`[Piped] Trying instance ${instance}${endpoint}`);
 
@@ -60,7 +124,6 @@ const pipedFetch = async (endpoint: string): Promise<Response | null> => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-      // Проксируем через наш CORS-прокси для обхода браузерных ограничений.
       const proxyUrl = `/api/cors-proxy?url=${encodeURIComponent(url)}`;
       const response = await fetch(proxyUrl, {
         method: 'GET',
@@ -68,36 +131,44 @@ const pipedFetch = async (endpoint: string): Promise<Response | null> => {
           'Accept': 'application/json',
         },
         signal: controller.signal,
-        // не следовать редиректам, иначе CF может получить 530 при
-        // попытке дойти до неразрешимого домена (как у adminforge).
         redirect: 'manual',
       });
 
       clearTimeout(timeoutId);
 
-      // Если получили перенаправление — игнорируем эту инстанцию.
       if (response.status >= 300 && response.status < 400) {
         const loc = response.headers.get('location');
         console.warn(`[Piped] instance ${instance} returned redirect to ${loc}`);
         lastError = new Error(`redirect ${response.status}`);
-        continue; // следующая инстанция
+        BROKEN_INSTANCES[instance] = now;
+        continue;
+      }
+
+      // Проверим content-type — ожидаем JSON от Piped API. Иногда инстансы
+      // возвращают HTML фронтенда или ошибку в виде HTML, это значит, что
+      // инстанс неподходящий для API‑запросов.
+      const ct = response.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        console.warn(`[Piped] instance ${instance} returned non-json content-type: ${ct}`);
+        lastError = new Error(`non-json ${ct}`);
+        BROKEN_INSTANCES[instance] = now;
+        continue;
       }
 
       if (response.ok) {
-        // Передвигаем глобальный указатель на следующий элемент, чтобы
-        // следующая операция начиналась с другого инстанса.
-        currentInstanceIndex = (idx + 1) % len;
+        // Обновляем глобальный указатель на оригинальном списке инстансов
+        const origIdx = PIPED_INSTANCES.indexOf(instance);
+        if (origIdx >= 0) currentInstanceIndex = (origIdx + 1) % PIPED_INSTANCES.length;
         return response;
       }
 
-      // любые другие статусы считаются ошибкой
       console.warn(`[Piped] instance ${instance} returned HTTP ${response.status}`);
       lastError = new Error(`HTTP ${response.status}`);
-      // продолжаем цикл, не выбрасывая, чтобы перейти к следующей точке
+      BROKEN_INSTANCES[instance] = now;
     } catch (error) {
       console.warn(`[Piped] error contacting ${instance}:`, error);
       lastError = error instanceof Error ? error : new Error(String(error));
-      // если fetch выкинул исключение, будем двигаться дальше
+      BROKEN_INSTANCES[instance] = now;
     }
   }
 
@@ -196,6 +267,19 @@ export const getStreamInfo = async (videoId: string): Promise<{
 export const getAudioUrl = async (videoId: string): Promise<string | null> => {
   const info = await getStreamInfo(videoId);
   return info?.audioUrl || null;
+};
+
+/**
+ * Возвращает `true`, если есть хотя бы одна инстанция, не помеченная как
+ * сломанная (или у которой закончился таймаут). Клиент может использовать
+ * это, чтобы отключать элементы UI, если Piped недоступен.
+ */
+export const isAvailable = (): boolean => {
+  const now = Date.now();
+  return PIPED_INSTANCES.some(inst => {
+    const t = BROKEN_INSTANCES[inst];
+    return t === undefined || now - t > BROKEN_TIMEOUT;
+  });
 };
 
 /**
