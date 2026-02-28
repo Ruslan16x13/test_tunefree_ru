@@ -8,8 +8,12 @@ const originalFetch = window.fetch;
 const proxiedFetch = (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
   const urlString = url.toString();
   
-  // Проксируем только YouTube запросы
-  if (urlString.includes('youtube.com') || urlString.includes('googlevideo.com')) {
+  // Проксируем запросы к YouTube, включая youtubei.googleapis.com и googlevideo
+  if (
+      urlString.includes('youtube.com') ||
+      urlString.includes('youtubei.googleapis.com') ||
+      urlString.includes('googlevideo.com')
+  ) {
     const proxyUrl = CORS_PROXY_URL + encodeURIComponent(urlString);
     return originalFetch(proxyUrl, init);
   }
