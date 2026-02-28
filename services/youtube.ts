@@ -113,6 +113,26 @@ export const getAudioInfo = async (videoId: string): Promise<{
   artist: string;
   duration: number;
 } | null> => {
+  // 1) Попробовать серверный endpoint /api/youtube (иннертубе функция), если доступен
+  try {
+    const resp = await fetch(`/api/youtube?videoId=${encodeURIComponent(videoId)}`);
+    if (resp.ok) {
+      const json = await resp.json();
+      if (json && json.url) {
+        return {
+          audioUrl: json.url,
+          thumbnail: json.thumbnail || `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+          title: json.title || 'Неизвестный трек',
+          artist: json.artist || 'Неизвестный исполнитель',
+          duration: json.duration || 0,
+        };
+      }
+    }
+  } catch (e) {
+    console.warn('[YouTube] server /api/youtube failed:', e);
+  }
+
+  // 2) Фоллбек: существующий клиентский код (@hydralerne/youtube-api)
   const mod = await loadYoutubeModule();
   if (!mod) {
     console.error('YouTube API модуль не доступен');
@@ -124,17 +144,13 @@ export const getAudioInfo = async (videoId: string): Promise<{
     
     // Пробуем получить данные через getData
     let data: any = null;
-    // Библиотека @hydralerne/youtube-api (основанная на ytdl-core) часто
-    // печатает в консоль предупреждения, когда не может разобрать скрипт
-    // YouTube. Это нормально, но засоряет логи и может пугать пользователя.
-    // Мы временно перехватываем console.warn и фильтруем «decipher» сообщения.
     const origWarn = console.warn;
     console.warn = (...args: any[]) => {
       try {
         const msg = String(args[0]);
         if (msg.includes('Could not parse decipher function') ||
             msg.includes('Could not parse n transform function')) {
-          return; // молча игнорируем
+          return;
         }
       } catch {}
       origWarn(...args);
@@ -149,7 +165,6 @@ export const getAudioInfo = async (videoId: string): Promise<{
       console.log('getData failed:', e);
     }
 
-    // Fallback на getTrackData
     if (!data && mod.getTrackData) {
       try {
         data = await mod.getTrackData(videoId);
@@ -159,9 +174,7 @@ export const getAudioInfo = async (videoId: string): Promise<{
       }
     }
 
-    // Восстанавливаем оригинальный console.warn сразу после вызовов
     console.warn = origWarn;
-
     window.fetch = originalFetch;
 
     if (!data) {
@@ -169,50 +182,33 @@ export const getAudioInfo = async (videoId: string): Promise<{
       return null;
     }
 
-    // Если данные найдены, но в ходе извлечения не было URL (см. логи выше),
-    // пробуем повторно вызвать getData один раз после небольшой паузы.
-    // Иногда это работает, когда ytdl-core неправильно распарсил шифровку.
     let audioUrlCandidate: string | null = null;
-
-    // Извлекаем аудио URL из adaptiveFormats или formats
     let audioUrl: string | null = null;
     const formats = data.adaptiveFormats || data.formats || [];
-    
-    // Ищем лучший аудио формат
     const audioFormats = formats.filter((f: any) => 
       f.mimeType?.includes('audio') || f.audioQuality
     );
-    
-    // Сортируем по качеству
     audioFormats.sort((a: any, b: any) => {
       const qualityOrder = ['AUDIO_QUALITY_LOW', 'AUDIO_QUALITY_MEDIUM', 'AUDIO_QUALITY_HIGH'];
       const aIndex = qualityOrder.indexOf(a.audioQuality);
       const bIndex = qualityOrder.indexOf(b.audioQuality);
       return bIndex - aIndex;
     });
-    
-    // Берем лучший аудио формат
     const bestAudio = audioFormats[0];
     if (bestAudio) {
       audioUrl = bestAudio.url || bestAudio.signatureCipher?.url || null;
     }
-
-    // Если нет аудио форматов, берем любой формат с URL
     if (!audioUrl && formats.length > 0) {
       const formatWithUrl = formats.find((f: any) => f.url);
       audioUrl = formatWithUrl?.url || null;
     }
 
-    // Если после первого анализа у нас нет URL, пробуем ещё раз выполнить
-    // getData. Часто библиотека просто неправильно распарсила подпись в первый
-    // раз, и второй вызов возвращает корректную ссылку.
     if (!audioUrl) {
       console.log('[YouTube] отсутствует URL, выполняем повторную попытку');
       try {
         window.fetch = proxiedFetch;
         const retryData = await mod.getData(videoId);
         window.fetch = originalFetch;
-        // повторно извлечём URL из нового объекта
         const retryFormats = retryData.adaptiveFormats || retryData.formats || [];
         const retryAudio = retryFormats
           .filter((f: any) => f.mimeType?.includes('audio') || f.audioQuality)
