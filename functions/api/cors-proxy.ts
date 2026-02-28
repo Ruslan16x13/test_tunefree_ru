@@ -32,6 +32,7 @@ const ALLOWED_HOSTS = [
     'googlevideo.com',
     'ytimg.com',
     'i.ytimg.com',
+    'youtubei.googleapis.com',
     // Piped API для получения аудио
     'api.piped.projectk.repl.co',
     'api.piped.privacydev.net',
