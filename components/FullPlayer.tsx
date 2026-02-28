@@ -1,0 +1,380 @@
+import React, { useEffect, useState, useRef } from 'react';
+import { usePlayer } from '../contexts/PlayerContext';
+import { useLibrary } from '../contexts/LibraryContext';
+import { getImgReferrerPolicy } from '../services/api';
+import { ParsedLyric } from '../types';
+import { 
+    ChevronDownIcon, MoreIcon, PlayIcon, PauseIcon, NextIcon, PrevIcon, 
+    HeartIcon, HeartFillIcon, MusicIcon, DownloadIcon, 
+    RepeatIcon, RepeatOneIcon, ShuffleIcon, QueueIcon
+} from './Icons';
+import AudioVisualizer from './AudioVisualizer';
+import QueuePopup from './QueuePopup';
+import DownloadPopup from './DownloadPopup';
+import PlayerMorePopup from './PlayerMorePopup';
+import { motion, PanInfo } from 'framer-motion';
+
+interface FullPlayerProps {
+  isOpen: boolean;
+  onClose: () => void;
+  layoutId?: string;
+}
+
+const parseLrc = (lrc: string): ParsedLyric[] => {
+  if (!lrc) return [];
+  const lines = lrc.split('\n');
+  const raw: { time: number; text: string }[] = [];
+  const timeExp = /\[(\d{2}):(\d{2})\.(\d{2,3})\]/;
+  
+  for (const line of lines) {
+    const match = timeExp.exec(line);
+    if (match) {
+      const min = parseInt(match[1]);
+      const sec = parseInt(match[2]);
+      const msStr = match[3];
+      const msVal = parseInt(msStr);
+      const ms = msStr.length === 2 ? msVal * 10 : msVal;
+      
+      const time = min * 60 + sec + ms / 1000;
+      const text = line.replace(timeExp, '').trim();
+      
+      if (text) {
+          raw.push({ time, text });
+      }
+    }
+  }
+
+  raw.sort((a, b) => a.time - b.time);
+
+  const result: ParsedLyric[] = [];
+  for (const item of raw) {
+      const last = result[result.length - 1];
+      if (last && Math.abs(last.time - item.time) < 0.2) {
+          if (!last.translation) {
+              last.translation = item.text;
+          }
+      } else {
+          result.push({ time: item.time, text: item.text });
+      }
+  }
+
+  return result;
+};
+
+const formatTime = (seconds: number) => {
+  if (isNaN(seconds)) return "0:00";
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+};
+
+const FullPlayer: React.FC<FullPlayerProps> = ({ isOpen, onClose, layoutId }) => {
+  const { currentSong, isPlaying, togglePlay, playNext, playPrev, currentTime, duration, seek, playMode, togglePlayMode, queue } = usePlayer();
+  const { isFavorite, toggleFavorite } = useLibrary();
+  const [lyrics, setLyrics] = useState<ParsedLyric[]>([]);
+  const [activeLyricIndex, setActiveLyricIndex] = useState(0);
+  const [showLyrics, setShowLyrics] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
+  const [showDownload, setShowDownload] = useState(false);
+  const [showMore, setShowMore] = useState(false);
+  const [imgError, setImgError] = useState(false);
+  
+  const lyricsContainerRef = useRef<HTMLDivElement>(null);
+
+  // Fetch Lyrics
+  useEffect(() => {
+    if (isOpen && currentSong) {
+      setLyrics([]);
+      setActiveLyricIndex(0);
+      setImgError(false); // Reset image error
+
+      // YouTube/Piped не предоставляет lyrics, показываем только если есть в кэше
+      if (currentSong.lrc) {
+        const parsed = parseLrc(currentSong.lrc);
+        setLyrics(parsed.length > 0 ? parsed : [{ time: 0, text: "Нет текста" }]);
+      } else {
+        // Для YouTube тексты недоступны через Piped API
+        setLyrics([{ time: 0, text: "Нет текста" }]);
+      }
+    }
+  }, [currentSong, isOpen]);
+
+  // Sync Lyrics Highlight
+  useEffect(() => {
+    if (lyrics.length === 0) return;
+    const index = lyrics.findIndex((line, i) => {
+      const nextLine = lyrics[i + 1];
+      return currentTime >= line.time && (!nextLine || currentTime < nextLine.time);
+    });
+    if (index !== -1 && index !== activeLyricIndex) {
+      setActiveLyricIndex(index);
+    }
+  }, [currentTime, lyrics, activeLyricIndex]);
+
+  // Scroll Lyrics
+  useEffect(() => {
+      if (showLyrics && lyricsContainerRef.current && lyrics.length > 0) {
+          const activeEl = lyricsContainerRef.current.children[activeLyricIndex] as HTMLElement;
+          if (activeEl) {
+              const container = lyricsContainerRef.current;
+              const scrollNew = activeEl.offsetTop - container.clientHeight / 2 + activeEl.clientHeight / 2;
+              container.scrollTo({ top: scrollNew, behavior: 'smooth' });
+          }
+      }
+  }, [activeLyricIndex, showLyrics, lyrics]);
+
+  const hasSong = !!currentSong;
+
+  // Gesture Handler
+  const handleDragEnd = (_: any, info: PanInfo) => {
+    // Dismiss threshold
+    if (info.offset.y > 150 || info.velocity.y > 300) {
+        onClose();
+    }
+  };
+
+  return (
+    <motion.div 
+      layoutId={layoutId}
+      className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-black overflow-hidden touch-none transition-colors duration-300"
+      initial={{ y: '100%' }}
+      animate={{ y: 0 }}
+      exit={{ y: '100%' }}
+      transition={{ type: 'spring', damping: 28, stiffness: 300, mass: 0.8 }}
+      drag="y"
+      dragConstraints={{ top: 0, bottom: 0 }}
+      dragElastic={{ top: 0.05, bottom: 0.5 }}
+      dragDirectionLock={true}
+      onDragEnd={handleDragEnd}
+      style={{ overscrollBehavior: 'none' }}
+    >
+      <motion.div 
+        className="flex flex-col h-full w-full relative"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.3 }}
+      >
+          {/* Ambient Background */}
+          {hasSong && currentSong.pic && !imgError && (
+            <div 
+                className="absolute inset-0 z-0 opacity-40 scale-150 blur-3xl transition-opacity duration-1000 pointer-events-none"
+                style={{ 
+                    backgroundImage: `url(${currentSong.pic})`,
+                    backgroundPosition: 'center',
+                    backgroundSize: 'cover'
+                }}
+            />
+          )}
+          <div className="absolute inset-0 z-0 bg-white/60 dark:bg-black/60 backdrop-blur-3xl pointer-events-none transition-colors duration-300" />
+
+          {/* --- Header --- */}
+          <div className="relative z-10 flex items-center justify-between px-6 pt-safe mt-4 pb-2">
+            <button onClick={onClose} className="p-2 text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white active:scale-90 transition">
+              <ChevronDownIcon size={30} />
+            </button>
+            <div className="w-10 h-1.5 bg-gray-300/80 rounded-full mx-auto absolute left-0 right-0 top-safe mt-4 pointer-events-none" />
+            <button 
+                onClick={() => hasSong && setShowMore(true)} 
+                className={`p-2 transition active:scale-90 ${hasSong ? 'text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white' : 'text-gray-300 dark:text-gray-600'}`}
+                disabled={!hasSong}
+            >
+              <MoreIcon size={24} />
+            </button>
+          </div>
+
+          {/* --- Main Content --- */}
+          <div className="relative z-10 flex-1 w-full overflow-hidden flex flex-col">
+              
+              <div className="relative flex-1 w-full">
+                {/* 1. Cover View */}
+                <motion.div 
+                    className={`absolute inset-0 flex flex-col items-center justify-center px-8`}
+                    animate={{ opacity: showLyrics ? 0 : 1, scale: showLyrics ? 0.95 : 1 }}
+                    style={{ pointerEvents: showLyrics ? 'none' : 'auto' }}
+                    onClick={() => hasSong && setShowLyrics(true)}
+                >
+                    <div className="w-full max-w-[350px] bg-gray-100 dark:bg-gray-800 shadow-[0_25px_60px_-12px_rgba(0,0,0,0.15)] dark:shadow-[0_25px_60px_-12px_rgba(0,0,0,0.5)] rounded-2xl overflow-hidden">
+                        {hasSong && currentSong.pic && !imgError ? (
+                            <motion.img
+                                src={currentSong.pic}
+                                alt="Album"
+                                referrerPolicy={getImgReferrerPolicy(currentSong.pic)}
+                                loading="lazy"
+                                className="w-full h-auto block"
+                                animate={{ scale: isPlaying ? 1 : 0.95 }}
+                                transition={{ duration: 0.7, ease: "easeInOut" }}
+                                onError={() => setImgError(true)}
+                            />
+                        ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                                <MusicIcon size={64} className="text-gray-300 dark:text-gray-600" />
+                            </div>
+                        )}
+                    </div>
+                </motion.div>
+
+                {/* 2. Lyrics View */}
+                <motion.div 
+                    className={`absolute inset-0 flex flex-col items-center justify-center z-20`}
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: showLyrics ? 1 : 0, scale: showLyrics ? 1 : 0.95 }}
+                    style={{ pointerEvents: showLyrics ? 'auto' : 'none' }}
+                >
+                    <div className="absolute inset-0" onClick={() => setShowLyrics(false)} />
+
+                    <div 
+                        ref={lyricsContainerRef}
+                        className="w-full h-full overflow-y-auto no-scrollbar relative px-8 py-[40vh] text-center"
+                        onPointerDown={(e) => e.stopPropagation()} 
+                        style={{ 
+                            maskImage: 'linear-gradient(to bottom, transparent 0%, black 25%, black 75%, transparent 100%)',
+                            WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 25%, black 75%, transparent 100%)'
+                        }}
+                    >
+                        {lyrics.length > 0 ? lyrics.map((line, i) => (
+                            <div 
+                                key={i} 
+                                className={`py-4 transition-all duration-500 cursor-pointer flex flex-col items-center ${
+                                    i === activeLyricIndex 
+                                    ? 'opacity-100 scale-105' 
+                                    : 'opacity-40 scale-100 hover:opacity-70'
+                                }`}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    seek(line.time);
+                                }}
+                            >
+                                <p className={`text-xl font-bold leading-relaxed ${i === activeLyricIndex ? 'text-gray-900 dark:text-white' : 'text-gray-500/80 dark:text-gray-400/80'}`}>
+                                    {line.text}
+                                </p>
+                                {line.translation && (
+                                    <p className={`text-base font-medium mt-1 leading-normal ${i === activeLyricIndex ? 'text-gray-700 dark:text-gray-300' : 'text-gray-500/60 dark:text-gray-500/60'}`}>
+                                        {line.translation}
+                                    </p>
+                                )}
+                            </div>
+                        )) : (
+                             <div className="flex flex-col items-center justify-center h-full absolute inset-0">
+        {hasSong ? (
+                                    <>
+                                        <div className="w-6 h-6 border-2 border-gray-300 dark:border-gray-600 border-t-transparent rounded-full animate-spin mb-2"></div>
+                                        <p className="text-gray-400 dark:text-gray-500 text-sm">Загрузка текста...</p>
+                                    </>
+                                ) : (
+                                    <p className="text-gray-400 dark:text-gray-500 text-sm">Ничего не воспроизводится</p>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </motion.div>
+              </div>
+
+              {/* Song Info */}
+              <div 
+                className="relative z-30 px-8 mt-4 mb-2 min-h-[80px] flex items-center justify-between pointer-events-auto"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                 <div className="flex-1 min-w-0 pr-4">
+                    <h2 className="text-2xl font-bold truncate text-black dark:text-white leading-tight">
+                        {hasSong ? currentSong.name : "Ничего не играет"}
+                    </h2>
+                    <div className="flex items-center mt-1">
+                        <p className="text-lg text-ios-red/90 font-medium truncate cursor-pointer hover:underline">
+                            {hasSong ? currentSong.artist : "Выберите песню"}
+                        </p>
+                    </div>
+                 </div>
+                 
+                 <div className="flex items-center space-x-3">
+                     <button 
+                        onClick={(e) => { e.stopPropagation(); if (hasSong) setShowDownload(true); }}
+                        className={`p-3 -m-1 rounded-full active:scale-90 transition-transform ${hasSong ? 'text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white' : 'text-gray-300 dark:text-gray-600'}`}
+                        disabled={!hasSong}
+                     >
+                        <DownloadIcon size={24} />
+                     </button>
+                     <button 
+                        onClick={(e) => { e.stopPropagation(); if (hasSong) toggleFavorite(currentSong); }}
+                        className={`p-3 -m-1 rounded-full active:scale-90 transition-transform ${!hasSong ? 'opacity-50' : ''}`}
+                        disabled={!hasSong}
+                     >
+                        {hasSong && isFavorite(currentSong.id) ? 
+                            <HeartFillIcon className="text-ios-red" size={26} /> : 
+                            <HeartIcon className="text-gray-400 dark:text-gray-500" size={26} />
+                        }
+                     </button>
+                 </div>
+              </div>
+          </div>
+
+          {/* --- Footer Controls --- */}
+          <div 
+            className="relative z-30 w-full px-8 pb-safe mb-4"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="mb-2 h-12 flex items-end">
+                <AudioVisualizer isPlaying={isPlaying} />
+            </div>
+
+                <div className="w-full mb-6 group">
+                <input 
+                    type="range" 
+                    min={0} 
+                    max={duration || 100} 
+                    value={currentTime} 
+                    onChange={(e) => seek(parseFloat(e.target.value))}
+                    disabled={!hasSong}
+                    className="w-full h-1 bg-gray-300 dark:bg-gray-600 rounded-lg appearance-none cursor-pointer accent-black dark:accent-white hover:h-1.5 transition-all disabled:opacity-50"
+                />
+                <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-2 font-medium font-mono tabular-nums">
+                    <span>{formatTime(currentTime)}</span>
+                    <span>{formatTime(duration)}</span>
+                </div>
+            </div>
+
+
+            <div className="flex items-center justify-between mb-4">
+                <button 
+                    onClick={togglePlayMode} 
+                    className={`p-2 transition active:scale-90 ${playMode !== 'sequence' ? 'text-ios-red' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}
+                >
+                    {playMode === 'sequence' && <RepeatIcon size={22} />}
+                    {playMode === 'loop' && <RepeatOneIcon size={22} />}
+                    {playMode === 'shuffle' && <ShuffleIcon size={22} />}
+                </button>
+
+                <div className="flex items-center gap-8">
+                    <button onClick={playPrev} disabled={!hasSong} className="text-black dark:text-white hover:opacity-70 transition active:scale-90 disabled:opacity-30">
+                        <PrevIcon size={40} className="fill-current" />
+                    </button>
+                    <button 
+                        onClick={togglePlay} 
+                        disabled={!hasSong}
+                        className="w-20 h-20 bg-black dark:bg-white text-white dark:text-black rounded-full flex items-center justify-center shadow-2xl hover:scale-105 active:scale-95 transition-all disabled:opacity-50"
+                    >
+                        {isPlaying ? <PauseIcon size={32} className="fill-current" /> : <PlayIcon size={32} className="fill-current ml-1" />}
+                    </button>
+                    <button onClick={() => playNext(true)} disabled={queue.length === 0} className="text-black dark:text-white hover:opacity-70 transition active:scale-90 disabled:opacity-30">
+                        <NextIcon size={40} className="fill-current" />
+                    </button>
+                </div>
+
+                <button 
+                    onClick={() => setShowQueue(true)}
+                    className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition active:scale-90"
+                >
+                    <QueueIcon size={22} />
+                </button>
+            </div>
+          </div>
+
+          <QueuePopup isOpen={showQueue} onClose={() => setShowQueue(false)} />
+          {hasSong && <DownloadPopup isOpen={showDownload} onClose={() => setShowDownload(false)} song={currentSong} />}
+          <PlayerMorePopup isOpen={showMore} onClose={() => setShowMore(false)} onClosePlayer={onClose} />
+      </motion.div>
+    </motion.div>
+  );
+};
+
+export default FullPlayer;
