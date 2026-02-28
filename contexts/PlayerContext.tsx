@@ -67,6 +67,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const queueRef = useRef(queue);
   const playModeRef = useRef(playMode);
   const audioQualityRef = useRef(audioQuality);
+    const resumeTimeRef = useRef<number>(0);
   
   // Track error retry to prevent loops
   const retryCountRef = useRef(0);
@@ -142,6 +143,15 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               setDuration(audio.duration);
               setIsLoading(false);
               retryCountRef.current = 0;
+              // apply pending resume time if any (set by playSong when switching quality)
+              if (resumeTimeRef.current && !isNaN(resumeTimeRef.current)) {
+                  try {
+                      audio.currentTime = resumeTimeRef.current;
+                  } catch (e) {
+                      console.warn('[Player] failed to set resumeTime on loadedmetadata', e);
+                  }
+                  resumeTimeRef.current = 0;
+              }
               if ('mediaSession' in navigator && !isNaN(audio.duration)) {
                   try {
                       navigator.mediaSession.setPositionState({
@@ -351,7 +361,9 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             audioRef.current.load();
 
             if (resumeTime > 0) {
-                audioRef.current.currentTime = resumeTime;
+                // Defer applying resume time until metadata is loaded to avoid
+                // InvalidStateError in some browsers. Store in ref and apply in loadedmetadata.
+                resumeTimeRef.current = resumeTime;
             }
 
             if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
