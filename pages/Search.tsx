@@ -75,7 +75,7 @@ const Search: React.FC = () => {
   const [query, setQuery] = useState(initialQuery);
   const [results, setResults] = useState<Song[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [searchMode, setSearchMode] = useState<'aggregate'>('aggregate');
+  const [searchMode, setSearchMode] = useState<'aggregate' | 'single'>('aggregate');
   const [searchSource, setSearchSource] = useState<'youtube' | 'piped'>('youtube');
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
