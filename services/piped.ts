@@ -6,14 +6,21 @@ import { Song } from '../types';
  */
 
 // Список публичных Piped API инстанций
+// Замечание: многие хосты публичных прокси ненадёжны. Порядок влияет на
+// вероятность получения рабочего результата, поэтому самую стабильную
+// (если она есть) желательно поместить в начало. Пустые/сломанные домены
+// будут автоматически пропускаться.
 const PIPED_INSTANCES = [
-  'https://pipedapi.adminforge.de',
+  // раньше использовался `pipedapi.adminforge.de`, но он переадресовывает на
+  // несуществующий домен и вызывает HTTP 530 при проксировании через CF.
+  // Удаляем его из списка, оставляя меньше шансов получить 530.
   'https://pipedapi.moomoo.me',
   'https://api.piped.moomoo.me',
   'https://piped-api.hypercrab.xyz',
 ];
 
-// Текущий индекс инстанции для миграции при сбое
+// Текущий индекс инстанции — будет двигаться по массиву по кругу, чтобы
+// при следующем запросе начинать со следующей точки.
 let currentInstanceIndex = 0;
 
 const getPipedInstance = (): string => {
@@ -27,46 +34,76 @@ const rotateInstance = (): void => {
 /**
  * Запрос с автоматическим переключением инстанций при ошибках
  */
-const pipedFetch = async (endpoint: string, retries = 2): Promise<Response | null> => {
+/**
+ * Выполняет запрос к Piped API. При неудаче перебирает все доступные инстанции
+ * и возвращает первый успешный ответ. Если ни одна точка не отвечает, возвращает
+ * null.
+ *
+ * Обратите внимание: публичные прокси довольно ненадёжны, поэтому логика
+ * здесь ориентирована на плавный отказ и автоматическое переключение.
+ */
+const pipedFetch = async (endpoint: string): Promise<Response | null> => {
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt < retries; attempt++) {
+  // Сохраним стартовую позицию, чтобы потом продвинуть currentInstanceIndex,
+  // начиная со следующей точки (round‑robin).
+  const startIndex = currentInstanceIndex;
+  const len = PIPED_INSTANCES.length;
+
+  for (let i = 0; i < len; i++) {
+    const idx = (startIndex + i) % len;
+    const instance = PIPED_INSTANCES[idx];
+    const url = `${instance}${endpoint}`;
+    console.log(`[Piped] Trying instance ${instance}${endpoint}`);
+
     try {
-      const url = `${getPipedInstance()}${endpoint}`;
-      console.log(`[Piped] Fetching: ${url}`);
-      
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
-      
-      // используем наш CORS-прокси, чтобы обойти ограничения браузера
+
+      // Проксируем через наш CORS-прокси для обхода браузерных ограничений.
       const proxyUrl = `/api/cors-proxy?url=${encodeURIComponent(url)}`;
       const response = await fetch(proxyUrl, {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
         },
-        signal: controller.signal
+        signal: controller.signal,
+        // не следовать редиректам, иначе CF может получить 530 при
+        // попытке дойти до неразрешимого домена (как у adminforge).
+        redirect: 'manual',
       });
-      
+
       clearTimeout(timeoutId);
-      
+
+      // Если получили перенаправление — игнорируем эту инстанцию.
+      if (response.status >= 300 && response.status < 400) {
+        const loc = response.headers.get('location');
+        console.warn(`[Piped] instance ${instance} returned redirect to ${loc}`);
+        lastError = new Error(`redirect ${response.status}`);
+        continue; // следующая инстанция
+      }
+
       if (response.ok) {
+        // Передвигаем глобальный указатель на следующий элемент, чтобы
+        // следующая операция начиналась с другого инстанса.
+        currentInstanceIndex = (idx + 1) % len;
         return response;
       }
-      
-      if (response.status === 429 || response.status === 503) {
-        // Service unavailable - try next instance
-        throw new Error(`Instance returned ${response.status}`);
-      }
-      
+
+      // любые другие статусы считаются ошибкой
+      console.warn(`[Piped] instance ${instance} returned HTTP ${response.status}`);
       lastError = new Error(`HTTP ${response.status}`);
+      // продолжаем цикл, не выбрасывая, чтобы перейти к следующей точке
     } catch (error) {
-      console.warn(`[Piped] Attempt ${attempt + 1} failed:`, error);
+      console.warn(`[Piped] error contacting ${instance}:`, error);
       lastError = error instanceof Error ? error : new Error(String(error));
-      rotateInstance();
+      // если fetch выкинул исключение, будем двигаться дальше
     }
   }
-  
+
+  // Все инстанции перепробованы, продвинем указатель на начало следующего
+  // цикла и вернём null.
+  currentInstanceIndex = (startIndex + 1) % len;
   console.error('[Piped] All instances failed:', lastError);
   return null;
 };

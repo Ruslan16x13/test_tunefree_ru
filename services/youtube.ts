@@ -103,6 +103,22 @@ export const getAudioInfo = async (videoId: string): Promise<{
     
     // Пробуем получить данные через getData
     let data: any = null;
+    // Библиотека @hydralerne/youtube-api (основанная на ytdl-core) часто
+    // печатает в консоль предупреждения, когда не может разобрать скрипт
+    // YouTube. Это нормально, но засоряет логи и может пугать пользователя.
+    // Мы временно перехватываем console.warn и фильтруем «decipher» сообщения.
+    const origWarn = console.warn;
+    console.warn = (...args: any[]) => {
+      try {
+        const msg = String(args[0]);
+        if (msg.includes('Could not parse decipher function') ||
+            msg.includes('Could not parse n transform function')) {
+          return; // молча игнорируем
+        }
+      } catch {}
+      origWarn(...args);
+    };
+
     try {
       if (mod.getData) {
         data = await mod.getData(videoId);
@@ -111,7 +127,7 @@ export const getAudioInfo = async (videoId: string): Promise<{
     } catch (e) {
       console.log('getData failed:', e);
     }
-    
+
     // Fallback на getTrackData
     if (!data && mod.getTrackData) {
       try {
@@ -121,13 +137,21 @@ export const getAudioInfo = async (videoId: string): Promise<{
         console.log('getTrackData failed:', e);
       }
     }
-    
+
+    // Восстанавливаем оригинальный console.warn сразу после вызовов
+    console.warn = origWarn;
+
     window.fetch = originalFetch;
-    
+
     if (!data) {
       console.error('Не удалось получить данные о треке');
       return null;
     }
+
+    // Если данные найдены, но в ходе извлечения не было URL (см. логи выше),
+    // пробуем повторно вызвать getData один раз после небольшой паузы.
+    // Иногда это работает, когда ytdl-core неправильно распарсил шифровку.
+    let audioUrlCandidate: string | null = null;
 
     // Извлекаем аудио URL из adaptiveFormats или formats
     let audioUrl: string | null = null;
@@ -156,6 +180,38 @@ export const getAudioInfo = async (videoId: string): Promise<{
     if (!audioUrl && formats.length > 0) {
       const formatWithUrl = formats.find((f: any) => f.url);
       audioUrl = formatWithUrl?.url || null;
+    }
+
+    // Если после первого анализа у нас нет URL, пробуем ещё раз выполнить
+    // getData. Часто библиотека просто неправильно распарсила подпись в первый
+    // раз, и второй вызов возвращает корректную ссылку.
+    if (!audioUrl) {
+      console.log('[YouTube] отсутствует URL, выполняем повторную попытку');
+      try {
+        window.fetch = proxiedFetch;
+        const retryData = await mod.getData(videoId);
+        window.fetch = originalFetch;
+        // повторно извлечём URL из нового объекта
+        const retryFormats = retryData.adaptiveFormats || retryData.formats || [];
+        const retryAudio = retryFormats
+          .filter((f: any) => f.mimeType?.includes('audio') || f.audioQuality)
+          .sort((a: any, b: any) => {
+            const qualityOrder = ['AUDIO_QUALITY_LOW', 'AUDIO_QUALITY_MEDIUM', 'AUDIO_QUALITY_HIGH'];
+            return qualityOrder.indexOf(b.audioQuality) - qualityOrder.indexOf(a.audioQuality);
+          })[0];
+        audioUrlCandidate = retryAudio?.url || retryAudio?.signatureCipher?.url || null;
+        if (!audioUrlCandidate && retryFormats.length > 0) {
+          const f = retryFormats.find((f: any) => f.url);
+          audioUrlCandidate = f?.url || null;
+        }
+        if (audioUrlCandidate) {
+          console.log('[YouTube] повторная попытка вернула URL');
+          audioUrl = audioUrlCandidate;
+        }
+      } catch (e) {
+        window.fetch = originalFetch;
+        console.warn('[YouTube] повторная попытка getData не удалась', e);
+      }
     }
 
     console.log('Extracted audio info:', {

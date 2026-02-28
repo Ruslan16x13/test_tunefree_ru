@@ -33,11 +33,16 @@ const ALLOWED_HOSTS = [
     'ytimg.com',
     'i.ytimg.com',
     'youtubei.googleapis.com',
+    // дополнительные домены, если понадобится
     // Piped API для получения аудио
     'api.piped.projectk.repl.co',
     'api.piped.privacydev.net',
     'pipedapi.adminforge.de',
     'pipedapi.moomoo.me',
+    // потенциальные инстансы/хосты Piped, могут понадобиться позже
+    'piped.video',
+    'piped.kavin.rocks',
+    'adminforge.destreams',
 ];
 
 export const onRequest: PagesFunction = async (context) => {
@@ -65,8 +70,11 @@ export const onRequest: PagesFunction = async (context) => {
         return jsonResponse({ error: 'Некорректный целевой URL' }, 400, request);
     }
 
-    // Проверка белого списка
-    if (!ALLOWED_HOSTS.some(host => parsedTarget.hostname === host || parsedTarget.hostname.endsWith('.' + host))) {
+    // Проверка белого списка с логированием для отладки
+    const allowed = ALLOWED_HOSTS.some(host => parsedTarget.hostname === host || parsedTarget.hostname.endsWith('.' + host));
+    if (!allowed) {
+        // выводим в логи чтобы понять, какой хост отклоняется
+        console.warn('[CORS_PROXY] запрещённый хост:', parsedTarget.hostname);
         return jsonResponse({ error: `Хост не разрешён: ${parsedTarget.hostname}` }, 403, request);
     }
 
