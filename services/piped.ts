@@ -38,7 +38,9 @@ const pipedFetch = async (endpoint: string, retries = 2): Promise<Response | nul
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
       
-      const response = await fetch(url, {
+      // используем наш CORS-прокси, чтобы обойти ограничения браузера
+      const proxyUrl = `/api/cors-proxy?url=${encodeURIComponent(url)}`;
+      const response = await fetch(proxyUrl, {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
