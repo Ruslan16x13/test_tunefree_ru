@@ -2,6 +2,7 @@
 import React, { createContext, useContext, useState, useRef, useEffect, useCallback } from 'react';
 import { Song, PlayMode, AudioQuality } from '../types';
 import * as youtube from '../services/youtube';
+import * as piped from '../services/piped';
 
 interface PlayerContextType {
   currentSong: Song | null;
@@ -310,7 +311,24 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     try {
         // Получаем аудио URL через YouTube/Piped API
-        const audioUrl = await youtube.getAudioUrl(String(song.id));
+        let audioUrl: string | null = null;
+        if (song.source === 'piped') {
+            // если источник уже Piped, используем piped
+            audioUrl = await piped.getAudioUrl(String(song.id));
+        } else {
+            audioUrl = await youtube.getAudioUrl(String(song.id));
+            // Fallback: если YouTube не вернул ссылку, попробуем Piped
+            if (!audioUrl) {
+                try {
+                    audioUrl = await piped.getAudioUrl(String(song.id));
+                    if (audioUrl) {
+                        console.log('[Player] fallback to Piped URL for', song.id);
+                    }
+                } catch (e) {
+                    console.warn('[Player] Piped fallback failed', e);
+                }
+            }
+        }
 
         // Race condition check
         if (currentSongRef.current?.id !== song.id) {
