@@ -7,7 +7,7 @@ export interface Song {
   pic?: string;
   url?: string;
   lrc?: string;
-  source: 'netease' | 'qq' | 'kuwo' | 'youtube' | string;
+  source: 'netease' | 'qq' | 'kuwo' | 'youtube' | 'piped' | string;
   types?: string[];
   // Дополнительные поля для YouTube/Piped
   duration?: number;

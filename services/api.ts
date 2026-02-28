@@ -1,7 +1,9 @@
 import { Song, TopList, TuneHubMethod, TuneHubResponse } from '../types';
 import * as youtube from './youtube';
+import * as piped from './piped';
 
-// API использует только YouTube через @hydralerne/youtube-api с CORS прокси
+// API использует YouTube через @hydralerne/youtube-api и Piped API
+// Поддерживаются источники: 'youtube' и 'piped'
 // Старые китайские API (NetEase, QQ, KuWo) удалены
 // ytdlp-simple-api сервер больше не требуется - используем только CORS прокси
 
@@ -364,38 +366,83 @@ export const parseSongs = async (ids: string, platform: string, quality: string 
     return extractList(res.data);
 };
 
-// ====== ПОИСК: используем @hydralerne/youtube-api через CORS прокси ======
+// ====== ПОИСК: поддержка @hydralerne/youtube-api и Piped API ======
 
-export const searchSongs = async (keyword: string, platform: string, page: number = 1): Promise<Song[]> => {
-    // Используем только @hydralerne/youtube-api через CORS прокси
+export const searchSongs = async (keyword: string, platform: string = 'youtube', page: number = 1): Promise<Song[]> => {
+    // Поддерживаем оба источника
+    if (platform === 'piped') {
+        return piped.searchAudio(keyword);
+    }
+    
+    // YouTube по умолчанию
     return youtube.searchAudio(keyword, page);
 };
 
 export const searchAggregate = async (keyword: string, page: number = 1): Promise<Song[]> => {
-    // Агрегированный поиск - то же самое что обычный поиск YouTube
-    return youtube.searchAudio(keyword, page);
+    // Агрегированный поиск - совмещаем результаты из обоих источников
+    try {
+        const [youtubeResults, pipedResults] = await Promise.all([
+            youtube.searchAudio(keyword, page).catch(() => []),
+            piped.searchAudio(keyword).catch(() => [])
+        ]);
+        
+        // Объединяем и удаляем дубликаты
+        const combined = [...youtubeResults, ...pipedResults];
+        const uniqueMap = new Map<string, Song>();
+        
+        combined.forEach(song => {
+            const key = `${song.name.toLowerCase()}|${song.artist.toLowerCase()}`;
+            if (!uniqueMap.has(key)) {
+                uniqueMap.set(key, song);
+            }
+        });
+        
+        return Array.from(uniqueMap.values()).slice(0, 50);
+    } catch (error) {
+        console.error('Aggregated search error:', error);
+        return youtube.searchAudio(keyword, page);
+    }
 };
 
-// ====== ЧАРТЫ: используем тренды YouTube ======
+// ====== ЧАРТЫ: поддержка YouTube и Piped тренды ======
 
-export const getTopLists = async (platform: string): Promise<TopList[]> => {
-    // Возвращаем виртуальный "топ" для YouTube
+export const getTopLists = async (platform: string = 'youtube'): Promise<TopList[]> => {
+    // Возвращаем виртуальные "топы" для обоих источников
+    if (platform === 'piped') {
+        return [{
+            id: 'trending',
+            name: 'Популярное (Piped)',
+            updateFrequency: 'Ежедневное обновление',
+            picUrl: '',
+            coverImgUrl: ''
+        }];
+    }
+    
     return [{
         id: 'trending',
-        name: 'Популярное',
+        name: 'Популярное (YouTube)',
         updateFrequency: 'Ежедневное обновление',
         picUrl: '',
         coverImgUrl: ''
     }];
 };
 
-export const getTopListDetail = async (id: string | number, platform: string): Promise<Song[]> => {
-    // Получаем тренды YouTube через CORS прокси
+export const getTopListDetail = async (id: string | number, platform: string = 'youtube'): Promise<Song[]> => {
+    // Получаем тренды в зависимости от платформы
+    if (platform === 'piped') {
+        return piped.getTrendingAudio('RU');
+    }
+    
     return youtube.getTrendingAudio('RU');
 };
 
-export const getPlaylistDetail = async (id: string, platform: string): Promise<{name: string, songs: Song[]} | null> => {
-    // Для YouTube плейлистов
+export const getPlaylistDetail = async (id: string, platform: string = 'youtube'): Promise<{name: string, songs: Song[]} | null> => {
+    // Для YouTube и Piped плейлистов
+    if (platform === 'piped' || id.startsWith('OLAK') || id.match(/^[A-Za-z0-9_-]{30,}$/)) {
+        const result = await piped.getPlaylistInfo(id);
+        if (result) return result;
+    }
+    
     if (platform === 'youtube' || id.startsWith('PL') || id.length > 20) {
         const result = await youtube.getPlaylistInfo(id);
         if (result) return result;
@@ -414,8 +461,23 @@ export const getPlaylistDetail = async (id: string, platform: string): Promise<{
 
 // ====== ИНФОРМАЦИЯ О ТРЕКЕ ======
 
-export const getSongInfo = async (id: string | number, source: string): Promise<any | null> => {
-    // Для YouTube используем @hydralerne/youtube-api через CORS прокси
+export const getSongInfo = async (id: string | number, source: string = 'youtube'): Promise<any | null> => {
+    // Для Piped используем getStreamInfo
+    if (source === 'piped') {
+        const info = await piped.getStreamInfo(String(id));
+        if (!info) return null;
+        return {
+            id: String(id),
+            name: info.title,
+            artist: info.artist,
+            album: '',
+            pic: info.thumbnail,
+            source: 'piped',
+            duration: info.duration,
+        };
+    }
+    
+    // Для YouTube используем @hydralerne/youtube-api
     if (source === 'youtube') {
         const info = await youtube.getAudioInfo(String(id));
         if (!info) return null;
@@ -437,10 +499,15 @@ export const getSongInfo = async (id: string | number, source: string): Promise<
     return song;
 };
 
-export const getSongUrl = async (id: string | number, source: string, quality: string = '320k'): Promise<string | null> => {
+export const getSongUrl = async (id: string | number, source: string = 'youtube', quality: string = '320k'): Promise<string | null> => {
     if (!source || source === 'undefined') return null;
     
-    // Для YouTube используем только @hydralerne/youtube-api через CORS прокси
+    // Для Piped используем getAudioUrl
+    if (source === 'piped') {
+        return piped.getAudioUrl(String(id));
+    }
+    
+    // Для YouTube используем @hydralerne/youtube-api
     if (source === 'youtube') {
         return youtube.getAudioUrl(String(id));
     }
@@ -474,11 +541,22 @@ const _parseCache = new Map<string, { data: any[]; timestamp: number }>();
 const PARSE_CACHE_TTL = 5 * 60 * 1000; // 5 минут
 
 export const parseSongFull = async (
-    id: string | number, platform: string, quality: string = '320k'
+    id: string | number, platform: string = 'youtube', quality: string = '320k'
 ): Promise<{ url: string | null; lrc: string; pic: string } | null> => {
     if (!id || String(id).startsWith('temp_')) return null;
 
-    // Для YouTube используем только @hydralerne/youtube-api через CORS прокси
+    // Для Piped используем getStreamInfo
+    if (platform === 'piped') {
+        const pipedInfo = await piped.getStreamInfo(String(id));
+        if (!pipedInfo) return null;
+        return {
+            url: pipedInfo.audioUrl,
+            lrc: '', // Piped не предоставляет lyrics
+            pic: pipedInfo.thumbnail
+        };
+    }
+
+    // Для YouTube используем @hydralerne/youtube-api
     if (platform === 'youtube') {
         const ytInfo = await youtube.getAudioInfo(String(id));
         if (!ytInfo) return null;

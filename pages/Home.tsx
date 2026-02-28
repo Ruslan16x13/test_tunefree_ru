@@ -72,6 +72,7 @@ const Home: React.FC = () => {
   const [listsLoading, setListsLoading] = useState(true);   // Только загрузка списков чартов
   const [songsLoading, setSongsLoading] = useState(true);    // Только загрузка списка песен
   const [error, setError] = useState(false);
+  const [trendSource, setTrendSource] = useState<'youtube' | 'piped'>('youtube');
   const { playSong } = usePlayer();
   // Предотвращение race condition
   const fetchIdRef = useRef(0);
@@ -83,14 +84,14 @@ const Home: React.FC = () => {
     setSongsLoading(true);
 
     try {
-        // Получаем тренды через API (ytdlp или youtube)
-        const songs = await getTopListDetail('trending', 'youtube');
+        // Получаем тренды через API с выбранного источника
+        const songs = await getTopListDetail('trending', trendSource);
         if (thisId !== fetchIdRef.current) return;
         
         if (songs && songs.length > 0) {
             const sliced = songs.slice(0, 20);
             setFeaturedSongs(sliced);
-            _detailCache.set('trending', { songs: sliced, ts: Date.now() });
+            _detailCache.set(`trending-${trendSource}`, { songs: sliced, ts: Date.now() });
         } else {
             setFeaturedSongs([]);
             setError(true);
@@ -109,7 +110,7 @@ const Home: React.FC = () => {
 
   useEffect(() => {
     fetchTrending();
-  }, [fetchTrending]);
+  }, [fetchTrending, trendSource]);
 
   const getGreeting = () => {
     const hour = new Date().getHours();
@@ -123,10 +124,10 @@ const Home: React.FC = () => {
   const handleRefresh = useCallback(async () => {
       setSongsLoading(true);
       try {
-        const songs = await getTopListDetail('trending', 'youtube');
+        const songs = await getTopListDetail('trending', trendSource);
         const sliced = songs.slice(0, 20);
         setFeaturedSongs(sliced);
-        _detailCache.set('trending', { songs: sliced, ts: Date.now() });
+        _detailCache.set(`trending-${trendSource}`, { songs: sliced, ts: Date.now() });
       } catch (e) {
         console.error("Failed to load trending", e);
       } finally {
@@ -143,6 +144,30 @@ const Home: React.FC = () => {
     <div className="p-5 pt-safe min-h-screen bg-ios-bg dark:bg-black transition-colors duration-300">
       <div className="flex items-end justify-between mb-6 mt-2">
         <h1 className="text-3xl font-bold text-ios-text dark:text-white tracking-tight">{getGreeting()}</h1>
+      </div>
+
+      {/* Переключатель источников */}
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => setTrendSource('youtube')}
+          className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
+            trendSource === 'youtube'
+              ? 'bg-red-500 text-white'
+              : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 active:opacity-70'
+          }`}
+        >
+          YouTube Тренды
+        </button>
+        <button
+          onClick={() => setTrendSource('piped')}
+          className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
+            trendSource === 'piped'
+              ? 'bg-blue-500 text-white'
+              : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 active:opacity-70'
+          }`}
+        >
+          Piped Тренды
+        </button>
       </div>
 
       {error && (

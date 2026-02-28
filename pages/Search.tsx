@@ -1,6 +1,6 @@
 import React, { useState, useEffect, memo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { getImgReferrerPolicy, searchSongs } from '../services/api';
+import { getImgReferrerPolicy, searchSongs, searchAggregate } from '../services/api';
 import { Song } from '../types';
 import { usePlayer } from '../contexts/PlayerContext';
 import { SearchIcon, MusicIcon, TrashIcon } from '../components/Icons';
@@ -76,6 +76,7 @@ const Search: React.FC = () => {
   const [results, setResults] = useState<Song[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchMode, setSearchMode] = useState<'aggregate'>('aggregate');
+  const [searchSource, setSearchSource] = useState<'youtube' | 'piped'>('youtube');
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
 
@@ -128,8 +129,13 @@ const Search: React.FC = () => {
 
       const fetchSearch = async () => {
           try {
-              // Используем API вместо прямого вызова youtube
-              const data = await searchSongs(debouncedQuery, 'youtube', page);
+              // Используем выбранный источник или агрегированный поиск
+              let data;
+              if (searchMode === 'aggregate') {
+                  data = await searchAggregate(debouncedQuery, page);
+              } else {
+                  data = await searchSongs(debouncedQuery, searchSource, page);
+              }
 
               if (!data || data.length === 0) {
                   setHasMore(false);
@@ -146,7 +152,7 @@ const Search: React.FC = () => {
 
       fetchSearch();
     }
-  }, [debouncedQuery, page]);
+  }, [debouncedQuery, page, searchSource, searchMode]);
 
   const handleLoadMore = useCallback(() => {
       if (!isSearching && hasMore) {
@@ -187,6 +193,54 @@ const Search: React.FC = () => {
             onChange={handleQueryChange}
             onKeyDown={handleKeyDown}
           />
+        </div>
+
+        {/* Переключатель источников */}
+        <div className="flex gap-2 mb-3">
+          <button
+            onClick={() => {
+              setSearchMode('aggregate');
+              setPage(1);
+              setResults([]);
+            }}
+            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
+              searchMode === 'aggregate'
+                ? 'bg-ios-red text-white'
+                : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 active:opacity-70'
+            }`}
+          >
+            Все сразу
+          </button>
+          <button
+            onClick={() => {
+              setSearchMode('single');
+              setSearchSource('youtube');
+              setPage(1);
+              setResults([]);
+            }}
+            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
+              searchMode === 'single' && searchSource === 'youtube'
+                ? 'bg-red-500 text-white'
+                : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 active:opacity-70'
+            }`}
+          >
+            YouTube
+          </button>
+          <button
+            onClick={() => {
+              setSearchMode('single');
+              setSearchSource('piped');
+              setPage(1);
+              setResults([]);
+            }}
+            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
+              searchMode === 'single' && searchSource === 'piped'
+                ? 'bg-blue-500 text-white'
+                : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 active:opacity-70'
+            }`}
+          >
+            Piped
+          </button>
         </div>
 
       </div>
