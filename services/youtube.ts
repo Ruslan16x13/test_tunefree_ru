@@ -31,6 +31,27 @@ const loadYoutubeModule = async () => {
   try {
     window.fetch = proxiedFetch;
     youtubeModule = await import('@hydralerne/youtube-api');
+    // Оборачиваем потенциально нестабильные методы внешней библиотеки
+    const wrap = (fn: any) => {
+      if (typeof fn !== 'function') return fn;
+      return async (...args: any[]) => {
+        try {
+          return await fn(...args);
+        } catch (e) {
+          console.error('[youtube-api wrapper] internal error:', e);
+          return null;
+        }
+      };
+    };
+
+    // Простые имена методов, которые используются в коде
+    if (youtubeModule) {
+      youtubeModule.youtubeMusicSearch = wrap(youtubeModule.youtubeMusicSearch);
+      youtubeModule.getData = wrap(youtubeModule.getData);
+      youtubeModule.getTrackData = wrap(youtubeModule.getTrackData);
+      youtubeModule.getYTMusicRelated = wrap(youtubeModule.getYTMusicRelated);
+      youtubeModule.getYoutubeList = wrap(youtubeModule.getYoutubeList);
+    }
     window.fetch = originalFetch;
     return youtubeModule;
   } catch (error) {
